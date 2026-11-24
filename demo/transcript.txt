@@ -1,0 +1,181 @@
+Kestrel Outfitters: one orchestrator, a few simulated workers, one human.
+The operator has installed the hook gate (block) and the refund limits.
+
+Act 1 - Dispatch is a card
+--------------------------
+  orchestrator$ moon card new task --project storefront --title "Fix the CSV order export" --goal "orders export with currency" --done-when "the export tests pass; paste the test summary" --read-first export.py --do-not-touch ../billing/
+    #1 filed: task | storefront | Fix the CSV order export
+  orchestrator$ moon card new task --project storefront --title "Add a size filter to search" --done-when "the size filter works and its tests pass" --goal "shoppers filter by size" --probe '{"kind": "file", "path": "search.py", "matches": "def filter_by_size"}'
+    #2 filed: task | storefront | Add a size filter to search
+  orchestrator$ moon card new task --project billing --title "Rate-limit the refund endpoint" --goal "at most 5 refunds per order per hour" --done-when "rate_limit.py caps refunds at 5 per order per hour" --do-not-touch payouts.py
+    #3 filed: task | billing | Rate-limit the refund endpoint
+  orchestrator$ moon card new task --project storefront --title "Tidy the returns page" --done-when "it reads well"
+    #4 filed: task | storefront | Tidy the returns page
+  orchestrator$ moon open 4
+    refused: #4 has no contract yet (missing goal)
+      instead: the orchestrator files it again with the same title plus the missing fields; that updates the card
+    (exit 5)
+  orchestrator$ moon card new task --project storefront --title "Tidy the returns page" --done-when "it reads well" --goal "returns explained in one screen"
+    #4 updated (goal): same card
+  => no card, no session (exit 5, INC-001); the refusal says how to get one
+
+Act 2 - A diligent worker
+-------------------------
+  orchestrator opens s1-1 for #1
+  s1-1 says: Picking up #1: Fix the CSV order export. Reading first.
+  s1-1 Read export.py: ok
+  s1-1 Edit export.py: ok
+  s1-1 Bash python -m unittest discover -s tests: ok
+  worker:s1-1$ moon done 1 --evidence "Ran 1 test in <t>s; OK"
+    #1 done
+    checks: evidence_shape pass, covers pass, do_not_touch pass, probe not_applicable
+  => the evidence is the real test output; four checks read it in code, no model
+
+Act 3 - A sloppy worker
+-----------------------
+  orchestrator opens s2-1 for #2
+  s2-1 says: Looks done to me.
+  worker:s2-1$ moon done 2 --evidence "done, all good"
+    refused: "done, all good" says it is done, not what shows it is done
+      instead: paste what shows it: the test summary, a file path, a number
+    (exit 1)
+  worker:s2-1$ moon done 2 --evidence "the size filter works and its tests pass"
+    #2 done
+    warning (covers): the evidence only repeats the done-when text
+    warning (probe): search.py does not exist
+  orchestrator$ moon reopen 2 --reason "search.py does not exist"
+    #2 done -> open
+  orchestrator$ moon close s2-1 --note "handed back without the work"
+    s2-1 closed, with a handover note for the next session
+  ... eight days of warnings later ...
+  program$ moon checks review
+    #5 filed: decision | ops | Acceptance check covers: block, keep warning, or turn off?
+    #6 filed: decision | ops | Acceptance check probe: block, keep warning, or turn off?
+  the human opens the one-time link from `moon serve` -> HTTP 200, a key the page keeps for this port; the link is now used up
+  the human, on the board: #6 'block' -> HTTP 200, #6: block
+  the human, on the board: #5 'keep warning' -> HTTP 200, #5: keep warning
+  orchestrator opens s2-2 for #2
+  s2-2 says: Handing it back again.
+  worker:s2-2$ moon done 2 --evidence "the size filter works and its tests pass"
+    refused: #2 not accepted: search.py does not exist
+      instead: finish the work so the card's probe agrees, then hand back again
+    (exit 1)
+  => checks ship warning; only the human's click made probe block (DEC-005)
+
+Act 4 - Guardrails at tool-call time
+------------------------------------
+  orchestrator opens s3-1 for #3
+  s3-1 Read payouts.py: ok
+  s3-1 Edit payouts.py: denied
+  s3-1 Write events.jsonl: denied
+  s3-1 Write rate_limit.py: ok
+    hook: Edit: card #3 says do not touch payouts.py; instead: leave it, or file a request for the orchestrator (moon card new task --project billing --title ...). A wrong block? Tell the orchestrator; the operator can set it to observe
+    hook: Write: events.jsonl changes only through moon; instead: moon card new / moon done / moon undo (the log is append-only). A wrong block? Tell the orchestrator; the operator can set it to observe
+  worker:s3-1$ moon done 3 --evidence "billing/rate_limit.py caps refunds at 5 per order per hour"
+    #3 done
+  orchestrator Write search.py: denied
+  orchestrator Agent : denied
+    hook: Write: the orchestrator does not edit files itself (INC-008); instead: file the work as a card (moon card new task ...) and dispatch it (moon open N). A wrong block? Tell the orchestrator; the operator can set it to observe
+    hook: Agent: the orchestrator does not spawn subagents (DEC-010); instead: moon card new task --project P --title T --goal ... --done-when ..., then moon open N. A wrong block? Tell the orchestrator; the operator can set it to observe
+  => each denial names the command to use instead; the ordinary work went through
+
+Act 5 - Kill switch
+-------------------
+  program$ moon breaker ask refunds refund --amount 49 --host https://api.pay.example/v1 --key order-1042
+    refused: breaker: the switch for refunds is off; `moon breaker on --program refunds` asks the human to switch it on
+      instead: nothing was paid; `moon breaker status`
+    (exit 1)
+  worker:s3-1$ moon breaker on --program refunds
+    #7 asks the human to switch refunds on (web board, human-only)
+  the human, on the board: #7 'switch on' -> HTTP 200, #7: switch on
+  program$ moon breaker ask refunds refund --amount 49 --host https://api.pay.example/v1 --key order-1042
+    allowed: ticket 26
+  program$ moon breaker ask refunds refund --amount 49 --host https://api.pay.example/v1 --key order-1042
+    refused: breaker: key 'order-1042' was already allowed once: not twice
+      instead: nothing was paid; `moon breaker status`
+    (exit 1)
+  => off until the human says on; one key pays once (DEC-012); unsure means no (DEC-017)
+
+Act 6 - Human-only
+------------------
+  orchestrator$ moon card new decision --project support-desk --title "Choose a returns carrier" --background "the carrier ends in April" --option "parcelfast|next-day pickups|0.40 more a parcel" --option "northwind|cheapest|3-day pickups"
+    #8 filed: decision | support-desk | Choose a returns carrier
+  waiting on you: #8 Choose a returns carrier
+  whatever a shell says it is, its click does not count, and every try is logged:
+  human$ moon click 8 parcelfast
+    refused: #8 is human-only: only the human answers it, on the web board; this attempt was logged
+      instead: leave it in Waiting on you; to ask something else, file a new card
+    (exit 1)
+  orchestrator$ moon click 8 parcelfast
+    refused: #8 is human-only: only the human answers it, on the web board; this attempt was logged
+      instead: leave it in Waiting on you; to ask something else, file a new card
+    (exit 1)
+  a page on another site: #8 'parcelfast' -> HTTP 403, refused: the request came from another origin (http://shop.example.com)
+  a local script, no key: #8 'parcelfast' -> HTTP 401, refused: no board key: this door is the human's
+  so the agent tries to open a door of its own:
+  worker:s3-1$ moon serve
+    refused: this door is the human's: it does not open inside an agent session
+      instead: run `moon serve` in your own terminal, with no MOONLIT_ROLE or MOONLIT_SESSION set
+    (exit 1)
+  the human, on the board: #8 'parcelfast' -> HTTP 200, #8: parcelfast
+  => on the command line nobody is the human: only the web door answers (DEC-006)
+
+Act 7 - Crash and replay
+------------------------
+  the log's last line is cut short, as if the process died while writing it
+  orchestrator$ moon replay --verify
+    31 events -> 8 cards, 4 sessions
+    the last line is torn (32 bytes): skipped on read; the next append moves it to events.torn
+    verified
+  orchestrator$ moon done 4 --evidence "the returns page reads in one screen (review 2/2)"
+    #4 done
+  that was the wrong card: nobody has worked on #4 yet
+  orchestrator$ moon undo
+    event 33 (card.closed) taken back by event 34
+  orchestrator$ moon replay --verify
+    34 events -> 8 cards, 4 sessions
+    earlier torn lines are kept in events.torn
+    verified
+  => state is a fold of the log; a mistake is undone by a new event, nothing deleted
+
+Act 8 - Rules registry
+----------------------
+  green  R-001 No card, no session: a session opens only for an open task card that [...]
+  green  R-002 One job is one card: filing the same type, project and title again [...]
+  green  R-003 A worker files no card itself: whatever it files becomes a request the [...]
+  green  R-004 Handing a card back needs evidence, not a word that says it is done.
+  green  R-005 A human-only card is answered only by the human through the web door; [...]
+  green  R-006 The human's inbox has one definition: open actions, decisions and [...]
+  green  R-007 The premium model opens only after the human allows it with a web [...]
+  green  R-008 Nothing is deleted: undo is a new event, and state is whatever the log [...]
+  green  R-009 The orchestrator dispatches; it does not edit files, write from the [...]
+  green  R-010 The event log, the config, the rules file, everything under .moonlit/ [...]
+  green  R-011 A session may not write what its card's do-not-touch list forbids, [...]
+  green  R-012 Hooks fail open: any error allows the call and the exit code is always [...]
+  green  R-013 Only the gate that ships in observe can demote itself: once [...]
+  green  R-014 The breaker fails closed: unreadable state, or a clock frozen from the [...]
+  green  R-015 Anyone can switch the breaker off, which retires the open switch-on [...]
+  green  R-016 One idempotency key pays once, even when eight processes ask at the [...]
+  green  R-017 A rule added from the command line, whoever typed it, is registered as [...]
+  green  R-018 Tests never call a real model or a real agent CLI (INC-005).
+  grey   R-019 The effort level is the orchestrator's judgment; code only suggests a [...]
+  green  R-020 The web board is the human's door: with the gate on, an agent session [...]
+  green  R-021 A card's contract, and who the card waits on, change only by whoever [...]
+  green  R-022 A worker hands back the card its session was opened for and no other; [...]
+  green  R-023 A human answer becomes a setting only on a card filed by the program [...]
+  green  R-024 Redaction rewrites free text only: the breaker's record, clicks, [...]
+  worker:s3-1$ moon rules add "never refund the same order twice"
+    W-001 recorded as prose (grey); task #9 moves it into code
+  waiting on you: #10 Acknowledge rule W-001
+  => a rule is green only with an enforcer and a test in code (DEC-003); prose waits
+
+What happened
+  events in the log  37, replay verified
+  hand-backs checked 5, 1 blocked
+  refused            tool calls 4, refunds 2, command-line clicks on human-only cards 2
+  allowed            the human's web clicks 4, refunds paid 1 (one per key)
+
+try next:
+  python -m moonlit demo --serve           this story on the web board
+  python -m pytest tests/test_authorization.py -v
+  python evals/run.py                      the guardrails scored like classifiers
